@@ -1,18 +1,20 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"github.com/gorilla/websocket"
 )
 
-// Define WebSocket upgrader
+// WebSocket upgrader
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
 
-// UserBehavior struct for tracking user actions and feedback
+// UserBehavior struct
 type UserBehavior struct {
 	ID       string `json:"id"`
 	Action   string `json:"action"`
@@ -20,25 +22,25 @@ type UserBehavior struct {
 	Device   string `json:"device"`  // e.g., "smartwatch", "smartphone"
 }
 
-// AIModel struct for holding the knowledge base
+// AIModel struct
 type AIModel struct {
-	Knowledge map[string]int // Mapping each action to feedback score
+	Knowledge map[string]int // AI knowledge base
 }
 
-// NewAIModel initializes the AI model
+// NewAIModel initializes AI model
 func NewAIModel() *AIModel {
 	return &AIModel{
 		Knowledge: make(map[string]int),
 	}
 }
 
-// UpdateModel updates the knowledge base based on weighted feedback
+// UpdateModel updates knowledge with weighted feedback
 func (ai *AIModel) UpdateModel(behavior UserBehavior) {
 	weight := 1
 	if ai.Knowledge[behavior.Action] > 5 {
-		weight = 2 // Higher weight for strongly positive actions
+		weight = 2
 	} else if ai.Knowledge[behavior.Action] < -5 {
-		weight = 2 // Higher weight for strongly negative actions
+		weight = 2
 	}
 
 	if behavior.Feedback == 1 {
@@ -50,15 +52,42 @@ func (ai *AIModel) UpdateModel(behavior UserBehavior) {
 	fmt.Printf("Updated Knowledge for action '%s' with weight %d: %d\n", behavior.Action, weight, ai.Knowledge[behavior.Action])
 }
 
-// Log current knowledge base for debugging purposes
-func logKnowledge(ai *AIModel) {
-	fmt.Println("\n[LOG] Current AI Knowledge Base:")
-	for action, score := range ai.Knowledge {
-		fmt.Printf("Action: '%s', Score: %d\n", action, score)
+// SaveKnowledgeToFile saves the knowledge base to a JSON file
+func SaveKnowledgeToFile(ai *AIModel, filename string) {
+	file, err := os.Create(filename)
+	if err != nil {
+		log.Fatalf("Error creating file: %v", err)
 	}
+	defer file.Close()
+
+	encoder := json.NewEncoder(file)
+	err = encoder.Encode(ai.Knowledge)
+	if err != nil {
+		log.Fatalf("Error saving knowledge: %v", err)
+	}
+
+	fmt.Println("Knowledge base saved to file.")
 }
 
-// Handle WebSocket connections for real-time feedback
+// LoadKnowledgeFromFile loads the knowledge base from a JSON file
+func LoadKnowledgeFromFile(ai *AIModel, filename string) {
+	file, err := os.Open(filename)
+	if err != nil {
+		log.Printf("No previous knowledge found, starting fresh.")
+		return
+	}
+	defer file.Close()
+
+	decoder := json.NewDecoder(file)
+	err = decoder.Decode(&ai.Knowledge)
+	if err != nil {
+		log.Fatalf("Error loading knowledge: %v", err)
+	}
+
+	fmt.Println("Knowledge base loaded from file.")
+}
+
+// Handle WebSocket connections
 func handleWebSocket(ai *AIModel, w http.ResponseWriter, r *http.Request) {
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -67,7 +96,6 @@ func handleWebSocket(ai *AIModel, w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
-	// Continuously receive data from the client
 	for {
 		var behavior UserBehavior
 		err := conn.ReadJSON(&behavior)
@@ -76,10 +104,10 @@ func handleWebSocket(ai *AIModel, w http.ResponseWriter, r *http.Request) {
 			break
 		}
 
-		// Process the user behavior and update the AI model
+		// Process feedback
 		ai.UpdateModel(behavior)
 
-		// Send acknowledgment to the client
+		// Send acknowledgment
 		response := fmt.Sprintf("Received feedback for action '%s'", behavior.Action)
 		err = conn.WriteMessage(websocket.TextMessage, []byte(response))
 		if err != nil {
@@ -90,8 +118,9 @@ func handleWebSocket(ai *AIModel, w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
-	// Initialize the AI model
+	// Initialize AI model and load existing knowledge
 	aiModel := NewAIModel()
+	LoadKnowledgeFromFile(aiModel, "knowledge.json")
 
 	// Simulate initial behavior updates
 	fmt.Println("\nSimulating initial user behavior:")
@@ -104,16 +133,22 @@ func main() {
 		aiModel.UpdateModel(behavior)
 	}
 
-	// Log the initial knowledge base
-	logKnowledge(aiModel)
+	// Log the knowledge base
+	log.Println("\nCurrent AI Knowledge Base:")
+	for action, score := range aiModel.Knowledge {
+		fmt.Printf("Action: '%s', Score: %d\n", action, score)
+	}
 
-	// Set up HTTP server and WebSocket endpoint
+	// Set up WebSocket endpoint
 	http.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
 		handleWebSocket(aiModel, w, r)
 	})
 
-	// Start the WebSocket server
+	// Start WebSocket server
 	port := "8080"
 	fmt.Printf("\nWebSocket server started on ws://localhost:%s/ws\n", port)
 	log.Fatal(http.ListenAndServe(":"+port, nil))
+
+	// Save knowledge to file when the program ends
+	SaveKnowledgeToFile(aiModel, "knowledge.json")
 }
